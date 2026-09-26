@@ -4,7 +4,7 @@ import plotly.express as px
 import streamlit as st
 
 # ==========================================
-# KONFIGURASI HALAMAN
+# KONFIGURASI HALAMAN STREAMLIT
 # ==========================================
 st.set_page_config(
     page_title="Pantau Bioskop Harian",
@@ -22,6 +22,52 @@ app_mode = st.sidebar.radio(
     "Pilih Jenis Data / Dashboard:",
     ["🎬 Showtime Harian", "🎟️ Advance Ticket Sales (ATS)"],
 )
+
+
+# ==========================================
+# HELPER: PEMETAAN INDUK JARINAGAN BIOSKOP
+# ==========================================
+def map_jaringan_bioskop(bioskop_name):
+    name_upper = str(bioskop_name).upper().strip()
+
+    if "PLATINUM" in name_upper:
+        return "Platinum"
+    elif "CGV" in name_upper or "BLITZ" in name_upper:
+        return "CGV"
+    elif (
+        "XXI" in name_upper
+        or "PREMIERE" in name_upper
+        or "IMAX" in name_upper
+        or "21" in name_upper
+    ):
+        return "Cinema XXI"
+    elif "CINEPOLIS" in name_upper or "CINEMEXX" in name_upper:
+        return "Cinepolis"
+    elif "NSC" in name_upper:
+        return "NSC"
+    elif "KOTA CINEMA" in name_upper or "KCM" in name_upper:
+        return "Kota Cinema Mall"
+    elif "FLIX" in name_upper:
+        return "FLIX Cinema"
+    elif "GOLDEN" in name_upper:
+        return "Golden Theater"
+    else:
+        first_word = name_upper.split()[0].title() if name_upper else "Lainnya"
+        return first_word if len(first_word) > 2 else "Lainnya / Independen"
+
+
+def parse_ticket_value(val):
+    """Menangani angka biasa, teks, maupun rumus penjumlahan seperti '731+411'."""
+    val_str = str(val).strip()
+    if not val_str or val_str.lower() == "nan":
+        return 0
+
+    if "+" in val_str:
+        numbers = re.findall(r"\d+", val_str)
+        return sum(int(n) for n in numbers)
+
+    match = re.search(r"\d+", val_str)
+    return int(match.group(0)) if match else 0
 
 
 # ==========================================
@@ -56,6 +102,8 @@ def clean_and_process_showtime(files):
             extracted_date if extracted_date else "Unknown Date"
         )
 
+        df["Jaringan"] = df["Bioskop"].apply(map_jaringan_bioskop)
+
         if "Harga" in df.columns:
             df["Harga_Clean"] = (
                 df["Harga"]
@@ -72,6 +120,7 @@ def clean_and_process_showtime(files):
             for c in [
                 "Kota",
                 "Bioskop",
+                "Jaringan",
                 "Studio",
                 "Harga",
                 "Harga_Clean",
@@ -103,7 +152,7 @@ def clean_and_process_showtime(files):
 # 2. HELPER ADVANCE TICKET SALES (ATS)
 # ==========================================
 def process_single_ats_file(file, is_url=False):
-    """Membaca seluruh section film (Kuasa Gelap, Hasut, dll.) dalam 1 file ATS."""
+    """Membaca seluruh section film dan jaringan (XXI, CGV, Cinepolis, dll.) dalam 1 file ATS."""
     try:
         if is_url:
             df_raw = pd.read_csv(file, header=None)
@@ -115,26 +164,31 @@ def process_single_ats_file(file, is_url=False):
             else:
                 df_raw = pd.read_excel(file, header=None)
 
-        # Cari baris-baris header yang berisi "XXI" dan "LOKASI"
         header_rows = []
         for idx, row in df_raw.iterrows():
             row_str = " ".join(row.dropna().astype(str)).upper()
-            if "XXI" in row_str and "LOKASI" in row_str:
-                header_rows.append(idx)
+            if "LOKASI" in row_str or any(
+                j in row_str for j in ["XXI", "CGV", "CINEPOLIS", "PLATINUM"]
+            ):
+                if any(
+                    "SHOW" in str(v).upper() or "SEPTEMBER" in str(v).upper()
+                    for v in row
+                ):
+                    header_rows.append(idx)
 
         if not header_rows:
-            return pd.DataFrame()
+            header_rows = [1]
 
         film_sections = []
 
         for i, h_idx in enumerate(header_rows):
-            # Ekstrak Judul Film dari baris di atas header "LOKASI"
             title_row = df_raw.iloc[max(0, h_idx - 1)].dropna()
             film_title = "Unknown Film"
             for val in title_row:
                 s_val = str(val).strip()
                 if (
-                    s_val.upper() not in ["NO", "XXI", "LOKASI", ""]
+                    s_val.upper()
+                    not in ["NO", "XXI", "CGV", "LOKASI", "CINEPOLIS", ""]
                     and not s_val.isdigit()
                 ):
                     film_title = s_val
@@ -177,11 +231,14 @@ def process_single_ats_file(file, is_url=False):
             data_rows["Kota"] = (
                 data_rows["Kota"].astype(str).str.strip().str.title()
             )
+            data_rows["Jaringan"] = data_rows["Bioskop"].apply(
+                map_jaringan_bioskop
+            )
 
             val_cols = [c for c in data_rows.columns if "|" in str(c)]
             melted = pd.melt(
                 data_rows,
-                id_vars=["Bioskop", "Kota"],
+                id_vars=["Bioskop", "Kota", "Jaringan"],
                 value_vars=val_cols,
                 var_name="Tanggal_Sesi",
                 value_name="Tiket_Terjual",
@@ -198,13 +255,9 @@ def process_single_ats_file(file, is_url=False):
                 else "SHOW"
             )
 
-            melted["Tiket_Terjual"] = (
-                melted["Tiket_Terjual"].astype(str).str.extract(r"(\d+)")[0]
-            )
-            melted["Tiket_Terjual"] = (
-                pd.to_numeric(melted["Tiket_Terjual"], errors="coerce")
-                .fillna(0)
-                .astype(int)
+            # PARSE NILAI TIKET DENGAN FUNGSI PENJUMLAHAN PRESISI (misal: '731+411' -> 1142)
+            melted["Tiket_Terjual"] = melted["Tiket_Terjual"].apply(
+                parse_ticket_value
             )
 
             melted["Nama_Film"] = film_title
@@ -258,6 +311,13 @@ if app_mode == "🎬 Showtime Harian":
             "Pilih Film", options=film_list, default=film_list
         )
 
+        jaringan_list = sorted(df_combined["Jaringan"].unique().tolist())
+        selected_jaringan = st.sidebar.multiselect(
+            "Pilih Jaringan Bioskop",
+            options=jaringan_list,
+            default=jaringan_list,
+        )
+
         kota_list = sorted(df_combined["Kota"].dropna().unique().tolist())
         selected_kota = st.sidebar.multiselect(
             "Pilih Kota", options=kota_list, default=kota_list
@@ -265,6 +325,7 @@ if app_mode == "🎬 Showtime Harian":
 
         filtered_df = df_combined[
             (df_combined["Nama_Film"].isin(selected_film))
+            & (df_combined["Jaringan"].isin(selected_jaringan))
             & (df_combined["Kota"].isin(selected_kota))
         ]
 
@@ -286,7 +347,7 @@ if app_mode == "🎬 Showtime Harian":
             [
                 "📈 Tren Harian",
                 "🆚 Komparasi Film",
-                "📊 Sebaran & Wilayah",
+                "📊 Sebaran & Jaringan",
                 "🕒 Jam Tayang Populer",
                 "📋 Data Detail",
             ]
@@ -389,6 +450,23 @@ if app_mode == "🎬 Showtime Harian":
         with tab_sebaran:
             c_s1, c_s2 = st.columns(2)
             with c_s1:
+                st.subheader("Pangsa Pasar Jaringan Bioskop (Market Share)")
+                jaringan_counts = (
+                    filtered_df["Jaringan"].value_counts().reset_index()
+                )
+                jaringan_counts.columns = ["Jaringan", "Showtimes"]
+
+                fig_jaringan = px.pie(
+                    jaringan_counts,
+                    names="Jaringan",
+                    values="Showtimes",
+                    hole=0.4,
+                    title="Komposisi Induk Jaringan Bioskop",
+                    color_discrete_sequence=px.colors.qualitative.Set2,
+                )
+                st.plotly_chart(fig_jaringan, use_container_width=True)
+
+            with c_s2:
                 st.subheader("Top 10 Kota Terbanyak")
                 top_kota = (
                     filtered_df["Kota"].value_counts().head(10).reset_index()
@@ -401,28 +479,43 @@ if app_mode == "🎬 Showtime Harian":
                     orientation="h",
                     color="Jumlah Showtimes",
                     color_continuous_scale="Viridis",
+                    text_auto=True,
                 )
                 fig_kota.update_layout(
                     yaxis={"categoryorder": "total ascending"}
                 )
                 st.plotly_chart(fig_kota, use_container_width=True)
 
-            with c_s2:
-                st.subheader("Komposisi Jaringan Bioskop")
-                bioskop_counts = (
-                    filtered_df["Bioskop"]
-                    .value_counts()
-                    .head(10)
-                    .reset_index()
+            st.markdown("---")
+            st.subheader("🔍 Cari Showtime Bioskop / Cabang Spesifik")
+            search_bioskop = st.text_input(
+                "Ketik Nama Bioskop atau Cabang:",
+                placeholder="misal: Eastvara / Transmart / Central Park",
+            )
+
+            if search_bioskop:
+                filtered_search = filtered_df[
+                    filtered_df["Bioskop"].str.contains(
+                        search_bioskop, case=False, na=False
+                    )
+                ]
+                st.write(
+                    f"Ditemukan **{len(filtered_search)}** showtimes untuk kata kunci: **'{search_bioskop}'**"
                 )
-                bioskop_counts.columns = ["Bioskop", "Showtimes"]
-                fig_bio = px.pie(
-                    bioskop_counts,
-                    names="Bioskop",
-                    values="Showtimes",
-                    hole=0.4,
+                st.dataframe(
+                    filtered_search[
+                        [
+                            "Kota",
+                            "Jaringan",
+                            "Bioskop",
+                            "Studio",
+                            "Harga_Clean",
+                            "Jam_Tayang",
+                            "Nama_Film",
+                        ]
+                    ],
+                    use_container_width=True,
                 )
-                st.plotly_chart(fig_bio, use_container_width=True)
 
         with tab_jam:
             st.subheader("🕒 Distribusi Jam Tayang (Peak Hours)")
@@ -439,6 +532,7 @@ if app_mode == "🎬 Showtime Harian":
                 y="Jumlah Sesi",
                 color="Jumlah Sesi",
                 color_continuous_scale="Oranges",
+                text_auto=True,
             )
             st.plotly_chart(fig_jam, use_container_width=True)
 
@@ -499,6 +593,13 @@ elif app_mode == "🎟️ Advance Ticket Sales (ATS)":
             "Pilih Film", options=film_ats_list, default=film_ats_list
         )
 
+        jaringan_ats_list = sorted(df_ats["Jaringan"].unique().tolist())
+        selected_ats_jaringan = st.sidebar.multiselect(
+            "Pilih Jaringan Bioskop",
+            options=jaringan_ats_list,
+            default=jaringan_ats_list,
+        )
+
         kota_ats_list = sorted(df_ats["Kota"].unique().tolist())
         selected_ats_kota = st.sidebar.multiselect(
             "Pilih Kota", options=kota_ats_list, default=kota_ats_list
@@ -506,6 +607,7 @@ elif app_mode == "🎟️ Advance Ticket Sales (ATS)":
 
         filtered_ats = df_ats[
             (df_ats["Nama_Film"].isin(selected_ats_film))
+            & (df_ats["Jaringan"].isin(selected_ats_jaringan))
             & (df_ats["Kota"].isin(selected_ats_kota))
         ]
 
@@ -531,7 +633,7 @@ elif app_mode == "🎟️ Advance Ticket Sales (ATS)":
             [
                 "📅 Penjualan per Hari & Tanggal",
                 "🕒 Demografi Sesi Show",
-                "🏙️ Top Kota & Bioskop",
+                "🏙️ Top Kota & Jaringan",
                 "📋 Detail Data ATS",
             ]
         )
@@ -546,6 +648,24 @@ elif app_mode == "🎟️ Advance Ticket Sales (ATS)":
                 .sum()
                 .reset_index()
             )
+
+            # PENGURUTAN HARI SECARA KRONOLOGIS
+            day_order = {
+                "JUMAT": 1,
+                "SABTU": 2,
+                "MINGGU": 3,
+                "SENIN": 4,
+                "SELASA": 5,
+                "RABU": 6,
+                "KAMIS": 7,
+            }
+
+            def get_day_rank(val):
+                first_word = str(val).split()[0].upper()
+                return day_order.get(first_word, 99)
+
+            ats_daily["Rank"] = ats_daily["Hari_Tanggal"].apply(get_day_rank)
+            ats_daily = ats_daily.sort_values("Rank")
 
             fig_ats_daily = px.bar(
                 ats_daily,
@@ -599,6 +719,23 @@ elif app_mode == "🎟️ Advance Ticket Sales (ATS)":
         with tab_ats_kota:
             c_k1, c_k2 = st.columns(2)
             with c_k1:
+                st.subheader("Penjualan per Induk Jaringan Bioskop")
+                top_ats_jaringan = (
+                    filtered_ats.groupby("Jaringan")["Tiket_Terjual"]
+                    .sum()
+                    .reset_index()
+                )
+                fig_ats_j = px.pie(
+                    top_ats_jaringan,
+                    names="Jaringan",
+                    values="Tiket_Terjual",
+                    hole=0.4,
+                    title="Pangsa Presale per Jaringan",
+                    color_discrete_sequence=px.colors.qualitative.Pastel,
+                )
+                st.plotly_chart(fig_ats_j, use_container_width=True)
+
+            with c_k2:
                 st.subheader("Top 10 Kota Presale Terbanyak")
                 top_ats_kota = (
                     filtered_ats.groupby("Kota")["Tiket_Terjual"]
@@ -619,28 +756,6 @@ elif app_mode == "🎟️ Advance Ticket Sales (ATS)":
                     yaxis={"categoryorder": "total ascending"}
                 )
                 st.plotly_chart(fig_ats_k, use_container_width=True)
-
-            with c_k2:
-                st.subheader("Top 10 Bioskop Presale Terbanyak")
-                top_ats_bio = (
-                    filtered_ats.groupby("Bioskop")["Tiket_Terjual"]
-                    .sum()
-                    .nlargest(10)
-                    .reset_index()
-                )
-                fig_ats_b = px.bar(
-                    top_ats_bio,
-                    x="Tiket_Terjual",
-                    y="Bioskop",
-                    orientation="h",
-                    color="Tiket_Terjual",
-                    color_continuous_scale="Purples",
-                    text_auto=True,
-                )
-                fig_ats_b.update_layout(
-                    yaxis={"categoryorder": "total ascending"}
-                )
-                st.plotly_chart(fig_ats_b, use_container_width=True)
 
         with tab_ats_raw:
             st.subheader("📋 Data Rekapitulasi Presale (ATS)")
