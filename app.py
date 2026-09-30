@@ -754,7 +754,7 @@ else:
 
             filtered_ats["Bioskop_Cap_Matched"] = filtered_ats["Bioskop"].map(mapping_dict)
 
-            # Lookup Tuples (Nama_Clean, Show_Num_Int) -> Kapasitas Kursi
+            # Lookup Tuples Tepat: (Nama_Clean, Show_Num_Int) -> Kapasitas Kursi
             cap_lookup = df_cap.set_index(["Bioskop_Cap_Clean", "Show_Num_Int"])["Kapasitas_Seat"].to_dict()
             avg_cap_lookup = df_cap.groupby("Bioskop_Cap_Clean")["Kapasitas_Seat"].mean().to_dict()
             global_avg_cap = df_cap["Kapasitas_Seat"].mean()
@@ -773,20 +773,20 @@ else:
             filtered_ats["Kapasitas_Seat"] = 150
 
         # =========================================================
-        # 🛠️️ METRIK & OCCUPANCY RATE AGREGAT LENGKAP
+        # 🛠 METRIK & OCCUPANCY RATE AGREGAT LENGKAP
         # =========================================================
-        # 1. Total Tiket Terjual = Jumlahkan seluruh presale harian dari semua snapshot
         total_tiket_terjual = filtered_ats["Tiket_Terjual"].sum()
         
-        # 2. Total Kapasitas Studio Keseluruhan (1 Show per Bioskop x Sesi Show)
+        # Total Kapasitas Studio Keseluruhan (1 Show per Bioskop x Sesi Show)
         df_unique_shows = filtered_ats.groupby(["Bioskop", "Sesi_Show"])["Kapasitas_Seat"].first().reset_index()
         total_kapasitas_studio = df_unique_shows["Kapasitas_Seat"].sum()
         
         overall_occ = (total_tiket_terjual / total_kapasitas_studio * 100.0) if total_kapasitas_studio > 0 else 0.0
+        overall_occ = min(overall_occ, 100.0)
 
         if filtered_ats["Kapasitas_Seat"].sum() > 0:
             m1, m2, m3, m4, m5 = st.columns(5)
-            m1.metric("🎟️️ Tiket Terjual (Akumulasi Presale)", f"{total_tiket_terjual:,}")
+            m1.metric("🎟 Tiket Terjual (Akumulasi Presale)", f"{total_tiket_terjual:,}")
             m2.metric("💺 Total Kapasitas Studio (Hari H)", f"{total_kapasitas_studio:,}")
             m3.metric("📊 Occupancy Rate", f"{overall_occ:.1f}%")
             m4.metric("🏢 Total Bioskop", f"{filtered_ats['Bioskop'].nunique():,}")
@@ -896,7 +896,7 @@ else:
                 fig_ats_k.update_layout(yaxis={"categoryorder": "total ascending"})
                 st.plotly_chart(fig_ats_k, width="stretch")
 
-        # 💺 TAB KHUSUS OCCUPANCY RATE (PERHITUNGAN BENAR)
+        # 💺 TAB KHUSUS OCCUPANCY RATE
         if enable_occupancy and "💺 Analisis Occupancy Rate (%)" in tab_list:
             tab_occ_idx = tab_list.index("💺 Analisis Occupancy Rate (%)")
             with tabs[tab_occ_idx]:
@@ -904,14 +904,14 @@ else:
                 
                 urutan_show = ["SHOW 1", "SHOW 2", "SHOW 3", "SHOW 4", "SHOW 5"]
                 
-                # 1. Hitung Agregat per Bioskop & Sesi Show (Total Tiket Seluruh Snapshot / Kapasitas Studio 1 Show)
+                # 1. Agregat per Bioskop & Sesi Show
                 occ_show_agg = filtered_ats.groupby(["Bioskop", "Sesi_Show"]).agg(
                     Total_Terjual=("Tiket_Terjual", "sum"),
                     Kapasitas_Single=("Kapasitas_Seat", "first")
                 ).reset_index()
                 
                 occ_show_agg["Occupancy_Rate_%"] = occ_show_agg.apply(
-                    lambda r: (float(r["Total_Terjual"]) / float(r["Kapasitas_Single"]) * 100.0) if float(r["Kapasitas_Single"]) > 0 else 0.0,
+                    lambda r: min((float(r["Total_Terjual"]) / float(r["Kapasitas_Single"]) * 100.0), 100.0) if float(r["Kapasitas_Single"]) > 0 else 0.0,
                     axis=1
                 ).round(1)
 
@@ -927,7 +927,10 @@ else:
                     cap_by_show = df_unique_shows.groupby("Sesi_Show")["Kapasitas_Seat"].sum().to_dict()
                     occ_sesi_overall["Kapasitas_Show_Total"] = occ_sesi_overall["Sesi_Show"].map(cap_by_show)
                     
-                    occ_sesi_overall["Rate_%"] = (occ_sesi_overall["Total_Terjual"] / occ_sesi_overall["Kapasitas_Show_Total"] * 100.0).round(1)
+                    occ_sesi_overall["Rate_%"] = occ_sesi_overall.apply(
+                        lambda r: min((r["Total_Terjual"] / r["Kapasitas_Show_Total"] * 100.0), 100.0) if r["Kapasitas_Show_Total"] > 0 else 0.0,
+                        axis=1
+                    ).round(1)
                     
                     fig_occ_sesi = px.bar(
                         occ_sesi_overall,
@@ -952,7 +955,10 @@ else:
                     cap_by_bio = df_unique_shows.groupby("Bioskop")["Kapasitas_Seat"].sum().to_dict()
                     occ_bio_overall["Total_Kapasitas"] = occ_bio_overall["Bioskop"].map(cap_by_bio)
                     
-                    occ_bio_overall["Rate_%"] = (occ_bio_overall["Total_Terjual"] / occ_bio_overall["Total_Kapasitas"] * 100.0).round(1)
+                    occ_bio_overall["Rate_%"] = occ_bio_overall.apply(
+                        lambda r: min((r["Total_Terjual"] / r["Total_Kapasitas"] * 100.0), 100.0) if r["Total_Kapasitas"] > 0 else 0.0,
+                        axis=1
+                    ).round(1)
                     occ_bio_overall = occ_bio_overall.sort_values("Rate_%", ascending=False).head(20)
                     
                     fig_occ_bio = px.bar(
@@ -975,36 +981,36 @@ else:
                     
                     st.plotly_chart(fig_occ_bio, width="stretch")
 
-                st.markdown("---")
+        st.markdown("---")
 
-                # 🔥 HEATMAP BIOSKOP vs SESI SHOW vs OR (%)
-                st.subheader("🔥 Heatmap Occupancy Rate (%) per Jaringan & Jam Tayang")
-                
-                heatmap_df = occ_show_agg.pivot(
-                    index="Bioskop",
-                    columns="Sesi_Show",
-                    values="Occupancy_Rate_%"
-                ).fillna(0.0)
-                
-                existing_shows = [s for s in urutan_show if s in heatmap_df.columns]
-                if existing_shows:
-                    heatmap_df = heatmap_df[existing_shows]
-                
-                fig_heatmap = px.imshow(
-                    heatmap_df,
-                    labels=dict(x="Sesi Show", y="Bioskop", color="Occupancy Rate (%)"),
-                    x=heatmap_df.columns,
-                    y=heatmap_df.index,
-                    color_continuous_scale="YlOrRd",
-                    text_auto=".1f",
-                    aspect="auto",
-                    title="Peta Kepadatan Penonton (% OR) per Jaringan & Jam Tayang Hari H"
-                )
-                
-                fig_heatmap.update_xaxes(side="top")
-                fig_heatmap.update_layout(height=max(400, len(heatmap_df) * 30))
-                
-                st.plotly_chart(fig_heatmap, width="stretch")
+        # 🔥 HEATMAP BIOSKOP vs SESI SHOW vs OR (%)
+        st.subheader("🔥 Heatmap Occupancy Rate (%) per Jaringan & Jam Tayang")
+        
+        heatmap_df = occ_show_agg.pivot(
+            index="Bioskop",
+            columns="Sesi_Show",
+            values="Occupancy_Rate_%"
+        ).fillna(0.0)
+        
+        existing_shows = [s for s in urutan_show if s in heatmap_df.columns]
+        if existing_shows:
+            heatmap_df = heatmap_df[existing_shows]
+        
+        fig_heatmap = px.imshow(
+            heatmap_df,
+            labels=dict(x="Sesi Show", y="Bioskop", color="Occupancy Rate (%)"),
+            x=heatmap_df.columns,
+            y=heatmap_df.index,
+            color_continuous_scale="YlOrRd",
+            text_auto=".1f",
+            aspect="auto",
+            title="Peta Kepadatan Penonton (% OR) per Jaringan & Jam Tayang Hari H"
+        )
+        
+        fig_heatmap.update_xaxes(side="top")
+        fig_heatmap.update_layout(height=max(400, len(heatmap_df) * 30))
+        
+        st.plotly_chart(fig_heatmap, width="stretch")
 
         with tabs[-1]:
             st.subheader("📋 Data Detail Rekapitulasi Presale (ATS)")
