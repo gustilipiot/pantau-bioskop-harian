@@ -703,26 +703,22 @@ else:
             & (df_ats["Kota"].isin(selected_ats_kota))
         ].copy()
 
-        # 🕒 HELPER: PARSE & URUTKAN TANGGAL SECARA KRONOLOGIS
+        # 🕒 HELPER: PARSE & URUTKAN TANGGAL SNAPSHOT SECARA KRONOLOGIS
         def parse_date_sort_key(date_str):
             try:
-                # Coba parse menggunakan pandas to_datetime dengan format fleksibel
                 parsed = pd.to_datetime(date_str, errors="coerce")
                 if pd.notna(parsed):
                     return parsed
             except Exception:
                 pass
             
-            # Fallback ekstraksi angka pertama (misal: "JUMAT 25 September" -> 25)
             match = re.search(r"\d+", str(date_str))
             if match:
                 return int(match.group(0))
             return 0
 
-        # Buat kolom bantuan datetime/numeric untuk sorting kronologis
         filtered_ats["_Date_Sort"] = filtered_ats["Hari_Tanggal"].apply(parse_date_sort_key)
         
-        # Dapatkan list Hari_Tanggal unik yang sudah terurut kronologis
         sorted_hari_tanggal = (
             filtered_ats[["Hari_Tanggal", "_Date_Sort"]]
             .drop_duplicates()
@@ -776,36 +772,38 @@ else:
         else:
             filtered_ats["Kapasitas_Seat"] = 150
 
-        filtered_ats["Occupancy_Rate"] = filtered_ats.apply(
-            lambda r: (float(r["Tiket_Terjual"]) / float(r["Kapasitas_Seat"]) * 100.0) if float(r["Kapasitas_Seat"]) > 0 else 0.0,
-            axis=1
-        )
+        # =========================================================
+        # 🛠️️ METRIK & OCCUPANCY RATE AGREGAT LENGKAP
+        # =========================================================
+        # 1. Total Tiket Terjual = Jumlahkan seluruh presale harian dari semua snapshot
+        total_tiket_terjual = filtered_ats["Tiket_Terjual"].sum()
+        
+        # 2. Total Kapasitas Studio Keseluruhan (1 Show per Bioskop x Sesi Show)
+        df_unique_shows = filtered_ats.groupby(["Bioskop", "Sesi_Show"])["Kapasitas_Seat"].first().reset_index()
+        total_kapasitas_studio = df_unique_shows["Kapasitas_Seat"].sum()
+        
+        overall_occ = (total_tiket_terjual / total_kapasitas_studio * 100.0) if total_kapasitas_studio > 0 else 0.0
 
-        # METRIK ATAS
         if filtered_ats["Kapasitas_Seat"].sum() > 0:
             m1, m2, m3, m4, m5 = st.columns(5)
-            total_tiket = filtered_ats['Tiket_Terjual'].sum()
-            total_cap = filtered_ats['Kapasitas_Seat'].sum()
-            overall_occ = (total_tiket / total_cap * 100) if total_cap > 0 else 0
-
-            m1.metric("🎟️ Tiket Terjual", f"{total_tiket:,}")
-            m2.metric("💺 Total Kapasitas", f"{total_cap:,}")
-            m3.metric("📊 Rata Occupancy", f"{overall_occ:.1f}%")
+            m1.metric("🎟️️ Tiket Terjual (Akumulasi Presale)", f"{total_tiket_terjual:,}")
+            m2.metric("💺 Total Kapasitas Studio (Hari H)", f"{total_kapasitas_studio:,}")
+            m3.metric("📊 Occupancy Rate", f"{overall_occ:.1f}%")
             m4.metric("🏢 Total Bioskop", f"{filtered_ats['Bioskop'].nunique():,}")
             m5.metric("🏙️ Total Kota", f"{filtered_ats['Kota'].nunique():,}")
         else:
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("🎟️ Total Tiket Terjual (ATS)", f"{filtered_ats['Tiket_Terjual'].sum():,}")
+            m1.metric("🎟️ Total Tiket Terjual (ATS)", f"{total_tiket_terjual:,}")
             m2.metric("🏢 Bioskop Membuka ATS", f"{filtered_ats['Bioskop'].nunique():,}")
             m3.metric("🏙️ Kota Terjangkau", f"{filtered_ats['Kota'].nunique():,}")
-            m4.metric("📅 Hari Penayangan", f"{filtered_ats['Hari_Tanggal'].nunique():,}")
+            m4.metric("📅 Snapshot Data", f"{filtered_ats['Hari_Tanggal'].nunique():,}")
 
         st.markdown("---")
 
         tab_list = [
-            "📅 Penjualan per Hari & Tanggal",
+            "📅 Tren Penjualan per Snapshot Tanggal",
             "🕒 Demografi Sesi Show",
-            "🏙️️ Top Kota & Jaringan",
+            "🏙️ Top Kota & Jaringan",
         ]
         
         if enable_occupancy:
@@ -815,9 +813,9 @@ else:
 
         tabs = st.tabs(tab_list)
 
-        # TAB 1: PENJUALAN PER HARI & TANGGAL (URUT KRONOLOGIS)
+        # TAB 1: TREN AKUMULASI PRESALE PER TANGGAL SNAPSHOT
         with tabs[0]:
-            st.subheader("📅 Total Tiket Presale Terjual per Hari & Tanggal")
+            st.subheader("📅 Perkembangan Tiket Presale Terjual per Snapshot Tanggal")
             
             ats_daily = filtered_ats.groupby(["Hari_Tanggal", "_Date_Sort", "Nama_Film"])["Tiket_Terjual"].sum().reset_index()
             ats_daily = ats_daily.sort_values("_Date_Sort")
@@ -828,7 +826,7 @@ else:
                 y="Tiket_Terjual",
                 color="Nama_Film",
                 barmode="group",
-                title="Penjualan Tiket Berdasarkan Hari Penayangan (Urut Tanggal Kronologis)",
+                title="Penjualan Tiket Berdasarkan Tanggal Penarikan Data (Urut Kronologis)",
                 text_auto=True,
                 category_orders={"Hari_Tanggal": sorted_hari_tanggal}
             )
@@ -845,9 +843,9 @@ else:
             pivot_daily["TOTAL TIKET"] = pivot_daily.sum(axis=1)
             st.dataframe(pivot_daily.style.format("{:,}"), width="stretch")
 
-        # TAB 2: DEMOGRAFI SESI SHOW (URUT KRONOLOGIS)
+        # TAB 2: DEMOGRAFI SESI SHOW
         with tabs[1]:
-            st.subheader("🕒 Demand Tiket Berdasarkan Hari / Tanggal & Sesi Show")
+            st.subheader("🕒 Demand Tiket Berdasarkan Tanggal Snapshot & Sesi Show")
             
             ats_show_date = filtered_ats.groupby(["Hari_Tanggal", "_Date_Sort", "Sesi_Show", "Nama_Film"])["Tiket_Terjual"].sum().reset_index()
             ats_show_date = ats_show_date.sort_values("_Date_Sort")
@@ -861,7 +859,7 @@ else:
                 color="Sesi_Show",
                 barmode="group",
                 facet_col="Nama_Film" if ats_show_date["Nama_Film"].nunique() > 1 else None,
-                title="Perbandingan Penjualan Tiket per Hari/Tanggal & Jam Show (Urut Kronologis)",
+                title="Perbandingan Penjualan Tiket per Tanggal Snapshot & Jam Show",
                 text_auto=True,
                 category_orders={"Hari_Tanggal": sorted_hari_tanggal, "Sesi_Show": urutan_show}
             )
@@ -898,33 +896,46 @@ else:
                 fig_ats_k.update_layout(yaxis={"categoryorder": "total ascending"})
                 st.plotly_chart(fig_ats_k, width="stretch")
 
-        # 💺 TAB KHUSUS OCCUPANCY RATE
+        # 💺 TAB KHUSUS OCCUPANCY RATE (PERHITUNGAN BENAR)
         if enable_occupancy and "💺 Analisis Occupancy Rate (%)" in tab_list:
             tab_occ_idx = tab_list.index("💺 Analisis Occupancy Rate (%)")
             with tabs[tab_occ_idx]:
-                st.subheader("💺 Analisis Rasio Keterisian Kursi (% Occupancy Rate)")
+                st.subheader("💺 Analisis Rasio Keterisian Kursi (% Occupancy Rate Penayangan)")
                 
                 urutan_show = ["SHOW 1", "SHOW 2", "SHOW 3", "SHOW 4", "SHOW 5"]
                 
+                # 1. Hitung Agregat per Bioskop & Sesi Show (Total Tiket Seluruh Snapshot / Kapasitas Studio 1 Show)
+                occ_show_agg = filtered_ats.groupby(["Bioskop", "Sesi_Show"]).agg(
+                    Total_Terjual=("Tiket_Terjual", "sum"),
+                    Kapasitas_Single=("Kapasitas_Seat", "first")
+                ).reset_index()
+                
+                occ_show_agg["Occupancy_Rate_%"] = occ_show_agg.apply(
+                    lambda r: (float(r["Total_Terjual"]) / float(r["Kapasitas_Single"]) * 100.0) if float(r["Kapasitas_Single"]) > 0 else 0.0,
+                    axis=1
+                ).round(1)
+
                 col_occ1, col_occ2 = st.columns(2)
                 
                 with col_occ1:
-                    st.markdown("##### 📊 % Occupancy Rate per Sesi Show")
-                    occ_sesi = filtered_ats.groupby("Sesi_Show").agg(
-                        Terjual=("Tiket_Terjual", "sum"),
-                        Kapasitas=("Kapasitas_Seat", "sum")
+                    st.markdown("##### 📊 % Occupancy Rate Keseluruhan per Sesi Show")
+                    
+                    occ_sesi_overall = filtered_ats.groupby("Sesi_Show").agg(
+                        Total_Terjual=("Tiket_Terjual", "sum")
                     ).reset_index()
-                    occ_sesi["Rate_%"] = occ_sesi.apply(
-                        lambda r: (r["Terjual"] / r["Kapasitas"] * 100) if r["Kapasitas"] > 0 else 0, axis=1
-                    ).round(1)
+                    
+                    cap_by_show = df_unique_shows.groupby("Sesi_Show")["Kapasitas_Seat"].sum().to_dict()
+                    occ_sesi_overall["Kapasitas_Show_Total"] = occ_sesi_overall["Sesi_Show"].map(cap_by_show)
+                    
+                    occ_sesi_overall["Rate_%"] = (occ_sesi_overall["Total_Terjual"] / occ_sesi_overall["Kapasitas_Show_Total"] * 100.0).round(1)
                     
                     fig_occ_sesi = px.bar(
-                        occ_sesi,
+                        occ_sesi_overall,
                         x="Sesi_Show",
                         y="Rate_%",
                         color="Rate_%",
                         color_continuous_scale="Reds",
-                        title="% Keterisian per Sesi Show",
+                        title="% Keterisian per Sesi Show (Terjual / Total Kapasitas)",
                         text_auto=".1f",
                         category_orders={"Sesi_Show": urutan_show}
                     )
@@ -932,18 +943,20 @@ else:
                     st.plotly_chart(fig_occ_sesi, width="stretch")
 
                 with col_occ2:
-                    st.markdown("##### 🏢 % Occupancy Rate per Bioskop")
-                    occ_bio = filtered_ats.groupby("Bioskop").agg(
-                        Terjual=("Tiket_Terjual", "sum"),
-                        Kapasitas=("Kapasitas_Seat", "sum")
+                    st.markdown("##### 🏢 Top 20 Bioskop % Occupancy Rate Highest")
+                    
+                    occ_bio_overall = filtered_ats.groupby("Bioskop").agg(
+                        Total_Terjual=("Tiket_Terjual", "sum")
                     ).reset_index()
-                    occ_bio["Rate_%"] = occ_bio.apply(
-                        lambda r: (r["Terjual"] / r["Kapasitas"] * 100) if r["Kapasitas"] > 0 else 0, axis=1
-                    ).round(1)
-                    occ_bio = occ_bio.sort_values("Rate_%", ascending=False).head(20)
+                    
+                    cap_by_bio = df_unique_shows.groupby("Bioskop")["Kapasitas_Seat"].sum().to_dict()
+                    occ_bio_overall["Total_Kapasitas"] = occ_bio_overall["Bioskop"].map(cap_by_bio)
+                    
+                    occ_bio_overall["Rate_%"] = (occ_bio_overall["Total_Terjual"] / occ_bio_overall["Total_Kapasitas"] * 100.0).round(1)
+                    occ_bio_overall = occ_bio_overall.sort_values("Rate_%", ascending=False).head(20)
                     
                     fig_occ_bio = px.bar(
-                        occ_bio,
+                        occ_bio_overall,
                         x="Rate_%",
                         y="Bioskop",
                         orientation="h",
@@ -952,7 +965,14 @@ else:
                         title="Top 20 Bioskop Keterisian Tertinggi (%)",
                         text_auto=".1f"
                     )
-                    fig_occ_bio.update_layout(yaxis={"categoryorder": "total ascending"})
+                    
+                    fig_occ_bio.update_layout(
+                        yaxis={"categoryorder": "total ascending", "dtick": 1},
+                        height=600,
+                        margin=dict(l=160, r=60, t=50, b=50)
+                    )
+                    fig_occ_bio.update_traces(textposition="outside")
+                    
                     st.plotly_chart(fig_occ_bio, width="stretch")
 
                 st.markdown("---")
@@ -960,16 +980,7 @@ else:
                 # 🔥 HEATMAP BIOSKOP vs SESI SHOW vs OR (%)
                 st.subheader("🔥 Heatmap Occupancy Rate (%) per Jaringan & Jam Tayang")
                 
-                pivot_occ = filtered_ats.groupby(["Bioskop", "Sesi_Show"]).agg(
-                    Terjual=("Tiket_Terjual", "sum"),
-                    Kapasitas=("Kapasitas_Seat", "sum")
-                ).reset_index()
-                
-                pivot_occ["Occupancy_Rate_%"] = pivot_occ.apply(
-                    lambda r: (r["Terjual"] / r["Kapasitas"] * 100.0) if r["Kapasitas"] > 0 else 0.0, axis=1
-                ).round(1)
-                
-                heatmap_df = pivot_occ.pivot(
+                heatmap_df = occ_show_agg.pivot(
                     index="Bioskop",
                     columns="Sesi_Show",
                     values="Occupancy_Rate_%"
@@ -987,7 +998,7 @@ else:
                     color_continuous_scale="YlOrRd",
                     text_auto=".1f",
                     aspect="auto",
-                    title="Peta Kepadatan Penonton (% OR) per Jaringan & Jam Tayang"
+                    title="Peta Kepadatan Penonton (% OR) per Jaringan & Jam Tayang Hari H"
                 )
                 
                 fig_heatmap.update_xaxes(side="top")
@@ -996,5 +1007,5 @@ else:
                 st.plotly_chart(fig_heatmap, width="stretch")
 
         with tabs[-1]:
-            st.subheader("📋 Data Rekapitulasi Presale (ATS)")
+            st.subheader("📋 Data Detail Rekapitulasi Presale (ATS)")
             st.dataframe(filtered_ats.drop(columns=["_Date_Sort"], errors="ignore"), width="stretch")
